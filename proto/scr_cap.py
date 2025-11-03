@@ -7,9 +7,9 @@ import time
 from time import perf_counter
 
 class ScreenGrab:
-    def __init__(self, hwnd=None):
+    def __init__(self, monitor=1, hwnd=None):
         self.hwnd = self.is_valid_hwnd(hwnd)
-        self.cam = dxcam.create(output_idx=1, output_color="BGRA")
+        self.cam = dxcam.create(output_idx=monitor, output_color="BGRA")
     
     def is_valid_hwnd(self, hwnd):
         if win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):

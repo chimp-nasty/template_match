@@ -1,13 +1,9 @@
 import threading
 from queue import Queue, Full, Empty
 import time
-from time import perf_counter
-
-from proto.scr_cap import ImgShow, ScreenGrab, ColorConvertor
-from control.controller import Controller
 
 
-class ThreadedPipelineManager:
+class ThreadManager:
     def __init__(self, capture_func, process_func, logic_func=None, is_paused=lambda: False, on_pause=None, on_resume=None):
         """
         Two-thread (producer–consumer) manager for continuous capture + processing.
@@ -29,6 +25,8 @@ class ThreadedPipelineManager:
         self.stop_evt = threading.Event()
         self.threads = []
         self._was_paused = False
+
+        self.data = None
 
     # --- lifecycle controls ---
     def start(self):
@@ -101,68 +99,6 @@ class ThreadedPipelineManager:
             if frame is None:
                 break
 
-            data = self.process_func(frame)
-            self.logic_func(data)
+            self.data = self.process_func(frame)
+            self.logic_func(self.data)
             self.queue.task_done()
-
-
-if __name__ == "__main__":
-    # Pause / Unpause
-    c = Controller(pause_key="SPACE", terminate_key="c")
-    next_t = perf_counter()
-    dt = 0.01
-
-    # Screen Capture / Display / Proccessing
-    cap = ScreenGrab(monitor=1)
-    pro = ColorConvertor()
-    d = ImgShow(scale=0.5, hotkey="c")
-
-    latest_frame = [None]  # simple shared reference
-
-    def capture():
-        frame = cap.dxc_grab()
-        if frame is not None:
-            latest_frame[0] = frame
-        return frame
-
-    def process(frame):
-        return pro.colors_all_pixels_rgb(frame)
-
-    mgr = ThreadedPipelineManager(
-        capture_func=capture,
-        process_func=process,
-        logic_func=lambda data: None,
-        is_paused=lambda: c.paused,
-        on_pause=lambda: cap.pause() if hasattr(cap, "pause") else None,   # optional
-        on_resume=lambda: cap.resume() if hasattr(cap, "resume") else None # optional
-    )
-
-
-    # main loop
-    try:
-        mgr.start()
-        while not c.terminated:
-            c.poll()
-
-            if c.paused:
-                time.sleep(0.05)
-                continue
-
-            #logic 
-            frame = latest_frame[0]
-            if frame is not None:
-                cont = d.show(frame)
-                if not cont:
-                    break
-
-            next_t = c.pace(next_t, dt)
-    
-    except KeyboardInterrupt:
-        c.terminated = True
-
-    finally:
-        mgr.stop()
-        d.close()
-
-
-    
