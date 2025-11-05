@@ -100,11 +100,11 @@ if __name__ == "__main__":
     
     if len(hwnds) > 1:
         for hwnd in hwnds:
-            client = Client(FPS, hwnd, debug=False, display=False)
+            client = Client(fps=FPS, hwnd=hwnd, debug=False, display=False)
             clients.append(client)
     
     else:
-        client = Client(FPS, hwnd, debug=True, display=True)
+        client = Client(fps=FPS, hwnd=hwnd, debug=True, display=True)
         clients.append(client)
 
     for i, client in enumerate(clients, start=1):
