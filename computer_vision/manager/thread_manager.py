@@ -2,7 +2,7 @@ import threading
 from queue import Queue, Full, Empty
 import time
 
-from computer_vision.utils.pacer import Pacer
+from utils.pacer import Pacer
 
 
 def _ema_update(old, x, a=0.2):

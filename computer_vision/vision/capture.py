@@ -5,7 +5,7 @@ import numpy as np
 import win32api, win32con
 
 
-from computer_vision.utils.pacer import Pacer
+from utils.pacer import Pacer
 
 
 def _monitor_rect_from_hwnd(hwnd: int) -> tuple[int,int,int,int]:

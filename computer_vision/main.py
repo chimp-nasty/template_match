@@ -1,12 +1,12 @@
 import time
 
-from computer_vision.utils.hwnd_utils import hwnds_for
-from computer_vision.utils.pacer import Pacer
-from computer_vision.manager.keyboard_controller import Controller
-from computer_vision.manager.thread_manager import ThreadManager
-from computer_vision.vision.capture import Capture
-from computer_vision.vision.display import Display
-from computer_vision.processing.color_processor import ColorConvertor
+from utils.hwnd_utils import hwnds_for
+from utils.pacer import Pacer
+from manager.keyboard_controller import Controller
+from manager.thread_manager import ThreadManager
+from vision.capture import Capture
+from vision.display import Display
+from processing.color_processor import ColorConvertor
 
 
 PROCESS = ["notepad.exe"]
