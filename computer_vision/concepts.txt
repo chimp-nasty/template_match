@@ -1,0 +1,151 @@
+Concept:
+
+Vision bot is broken down into 4 core concepts / stages of operation.
+
+1. get screenshot
+    we need to find the target window (with hwnd, process name)
+    we take a screenshot and convert to a numpy array (c++ library that makes array ops very fast)
+    this is the first bottleneck. if the sreengrab is too expensive the logic cant keep up
+
+2. proccess the img
+    we convert the numpy array (screenshot) to the data format we want to use.
+    for color bots we can convert the whole screenshot to an array of colors, especically if we know what pixel correlates 
+    to what variable. this is great for wow where we can create an addon that maps memory to colored pixels on the screen with an in-built api.
+
+    for template matching which is a more generic approach, we can use templates (small pre-prepared screenshots) to try and locate regions of interest
+    and return the region coords into a numpy array
+    template matching is orders of magnitude more expensive than color conversion which is our biggest bottleneck
+    we can reduce the expense by guessing where the regions of interest might be, and performing template matches in these smaller regions, rather than the 
+    whole screenshot
+    we can do this by finding 'color blobs' and estimating the regions of interest from that
+
+3. mapping the data
+    we take our processed data and map it to some objects, variables that make sense
+    ie data[0] might be where health variable lives which we would store in player.health
+    we should convert colors to real values via decoding rgb / hsv etc
+    this is basically free since this is just reading an array and saving the result to another python object
+
+4. apply logic
+    we can then make our specialized scripts that utilize our named datastructures and objects and make a decision.
+    just a big if else chain that spits out 1 result
+    when we have a result we can send an input that is mapped to that decision ie press 'q' to use 'spell_a'
+    this is also free, once the data is mapped its very easy to evaluate that data and determine where on the chain we will fall.
+
+
+
+Multi-Threading Reasoning:
+
+threading is split into 2 operations:
+
+1. capture
+2. process + evaluate
+
+processing and evaluating (map -> apply logic) can be done togethor, since we need to wait until processed data is available to make a decision.
+we split capture and processing because we can take a new screenshot while we process, and vice versa. we separate our 2 bottlenecks which is has the most 
+performant potential.
+
+
+
+Project Specifics:
+
+this current client uses dxcam (the fastest available screenshotting library in python) which utilizes the gpu over the cpu.
+you cant get that much more speed in another language since even in compiled languages your performance gain is mostly from the evaluation - which is already free
+processing is done with opencv because it gives us the most scope -> allows color conversion, template_matching, etc and is built in C anyway so its basically as fast
+as you can get
+
+expect compiled languages to give you 10-20% more FPS, which is negligible
+
+
+
+Application Steps:
+
+For a new game to apply this bot these are the steps you need to build yourself:
+
+1. decide on color / template matching
+    can you somehow map colors that correlate to memory - then use a simple rgb converter (in project scope)
+    most likely you need to template match which means you will need to manually screenshot and save templates of what you want to
+    find on the screen.
+
+2. data processing
+    likely there are multiple template matching / color matching steps in finding the information. for example if we want to find enemies
+    
+    1. template match a picture of an enemy to a screenshot -> return an array that contains the coords of the matches
+        when there are multiple enemies we dont want to template match every single enemy type, we could instead match an enemy healthbar or nameplate and 
+        infer the enemy location from that match
+        this data gets mapped to an object / reference point
+
+    2. do another template / color match to each roi (enemy location)
+        we can read the health via text using font template matching, we can estimate a health percentage from amount of red / black region in the healthbar
+        now we can map the health of each enemy to their object / reference point
+    
+    for abilities, spell cooldowns we can get a preset coordinate and check for a color difference to see if a spell is on cooldown.
+    eg spell_a lives at [x,y] and the color of [x,y] is [1,2,3], if we use the spell the color of [x,y] becomes [4,5,6], so we know its on cooldown.
+
+    healthbars and ui elements will change location depending on resolution, monitor size, windowed mode, etc
+    we can convert a screenshot to colors, apply a HSV mask and then "guess" where the healthbar lives. we can then do a template match in that ROI to get a 
+    more performant match, because we arent trying to template match the whole screenshot.
+
+    we can track cooldowns and identify player abilities by using an enemy coord and infering where the cast bar appears, then we can font match and map that to a
+    hash table of spells to see what they are casting. 
+
+    with the dxcam setup this is a lot more possible because of the huge performance gains.
+
+
+3. create data structures
+    you need to build out dataclasses for the information you want to store - this is how your mapping functions know where to put that data
+    you need to think about what is possible / what you want to identify - in terms of information ie player health, enemy positions, spell cooldowns
+    a dataclass looks like this:
+    class Enemy:
+        def __init__(self):
+            self.health = None
+            self.loc = None
+            self.is_casting = False
+    so when you map raw data to the reference object you can use readable classes to create easy to build scripts
+
+4. create mapping functions
+    for template matching you would take a frame (provided by Capture) and look for matches - the coordinates for matches are put into an array
+    this gets mapped to a datastructure object
+    eg 
+
+    enemy = Enemy()
+    enemy.health
+    enemy.position
+
+    a mapping simple mapping function:
+
+    enemy.health = data[12] / 255
+    so we know enemy health is at this index in an rgb pixel. we apply our decoding function ( / 255 ) to get a real float from the rgb color and map to
+    the logical reference point
+
+5. create script / logic execution
+    if the data is nicely mapped this is extremely easy.
+    its just a big if else chain that evaluates to a single output.
+    
+    def decision() -> str:
+        if enemy.health > 90:
+            return "Hammer Strike"
+        elseif player.health < 50:
+            return "Health Potion"
+        else:
+            return None
+
+    once we return what we want to do, we reference a hash table that correlates an input to a key
+    
+    spells = {
+        "Hammer Strike": "e",
+    }
+
+    def send_input(decision) -> None:
+        pyautogui.press(spells[decision])
+
+    this is just an example of how to do it but you dont have to use pyautogui, I use postmessage to send inputs because you can send them directly to a target window
+    with a hwnd (windows handle)
+
+The whole flow of this is just to give insight on how to build something from scratch with the project framework, there are many ways to extract & isolate the data
+you want but the main bottleneck will be template matching performance. with simple color conversion you can easy push 500 cycles per second on low end hardware and really you would 
+only need about 30-100 to feel effective.
+
+template matching can be played around with a lot too eg template matching to grayscale img or using the hsv roi trick mentioned above, its about reducing the heavy lifting of
+the template matching as much as possible, which is most notably reducing the size of the needle (template) and the size of the haystack (reference img)
+
+you want to minimised the amount of templates you try to match to the whole screenshot as this will kill your bot.

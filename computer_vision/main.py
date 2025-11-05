@@ -9,7 +9,7 @@ from computer_vision.vision.display import Display
 from computer_vision.processing.color_processor import ColorConvertor
 
 
-PROCESS = ["lofi.exe"]
+PROCESS = ["notepad.exe"]
 FPS = 200
 
 class Client:
@@ -34,6 +34,7 @@ class Client:
         # Shared reference for most-recent frame (for display)
         self.latest_frame = [None]
 
+        # Multi threads the capture / consumer loops
         self.manager = ThreadManager(
             capture_func=self.capture_func,
             process_func=self.process_func,
@@ -56,11 +57,13 @@ class Client:
             self.latest_frame[0] = frame
         return frame
 
+    # example function. this currently converts a screengrab into an array of colors for color bot functionality
     def process_func(self, frame):
         if frame is None:
             return None
         return self.color_processor.opencv_color(frame)
 
+    # example function. this would encapsulate the mapping raw data to relevant data structures and then applying logic
     def logic_func(self, data):
         # super light: just touch one value (or do your real logic)
         _ = data[0] if (data is not None and len(data) > 0) else None
@@ -86,6 +89,7 @@ class Client:
 
         except KeyboardInterrupt:
             self.controller.terminated = True
+        
         finally:
             self.manager.stop()
             if self.display:
@@ -100,13 +104,13 @@ if __name__ == "__main__":
     
     if len(hwnds) > 1:
         for hwnd in hwnds:
-            client = Client(fps=FPS, hwnd=hwnd, debug=False, display=False)
+            client = Client(target_fps=FPS, hwnd=hwnd, debug=False, display=False)
             clients.append(client)
     
     else:
-        client = Client(fps=FPS, hwnd=hwnd, debug=True, display=True)
+        client = Client(target_fps=FPS, hwnd=hwnd, debug=False, display=True)
         clients.append(client)
 
     for i, client in enumerate(clients, start=1):
-        print(f"Starting Client {i}/{len(clients)} -> hwnd={client.hwnd}")
+        print(f"Starting Client {i}: hwnd={client.hwnd}")
         client.start()
