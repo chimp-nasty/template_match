@@ -5,6 +5,9 @@ import numpy as np
 import win32api, win32con
 
 
+from computer_vision.utils.pacer import Pacer
+
+
 def _monitor_rect_from_hwnd(hwnd: int) -> tuple[int,int,int,int]:
     hmon = win32api.MonitorFromWindow(hwnd, win32con.MONITOR_DEFAULTTONEAREST)
     info = win32api.GetMonitorInfo(hmon)
@@ -63,7 +66,7 @@ def fast_grab(cam, region=None, out: np.ndarray | None = None):
 
 
 class Capture:
-    def __init__(self, monitor=0, hwnd=None):
+    def __init__(self, monitor=0, hwnd=None, pace_fps: float | None = None):
         self.hwnd = hwnd if (hwnd and win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd)) else None
         self._monitors = _enum_monitor_rects_sorted()
 
@@ -76,6 +79,7 @@ class Capture:
 
         self._buf = None
         self.cam = dxcam.create(output_idx=self._mon_idx, output_color="BGRA")
+        self._pacer = Pacer(pace_fps, high_res=True) if (pace_fps and pace_fps > 0) else None
 
     def _get_monitor_resolution(self):
         ml, mt, mr, mb = self._monitors[self._mon_idx]
@@ -119,6 +123,9 @@ class Capture:
         return self._buf
     
     def mss_grab(self, region: dict = None):
+        if self._pacer:
+            self._pacer.pace()
+
         if self.hwnd:
             x, y, w, h = self._get_region(region)
             with mss.mss() as sct:
@@ -129,6 +136,9 @@ class Capture:
         return np.array(frame, copy=False)
 
     def dxc_grab(self, region: dict = None):
+        if self._pacer:
+            self._pacer.pace()
+
         if self.hwnd:
             ax, ay, w, h = self._get_region(region)
             self._ensure_cam_on_hwnd_monitor()

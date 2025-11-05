@@ -1,4 +1,5 @@
 import numpy as np
+import cv2
 
 
 class ColorConvertor:
@@ -20,17 +21,10 @@ class ColorConvertor:
         b = rgb[:, 2].astype(np.uint32)
         return (r << 16) | (g << 8) | b
 
-    def get_colors_all_pixels_slow(self, screenshot: np.ndarray) -> list[tuple[int, int, int]]:
-        """Naive per-pixel getter using Python loops on a NumPy array. Very slow."""
-        h, w = screenshot.shape[:2]
-        out = []
-        for y in range(h):
-            for x in range(w):
-                # screenshot[y, x] is [B, G, R, A] or [B, G, R]
-                px = screenshot[y, x]
-                if px.shape[0] >= 3:
-                    b, g, r = px[:3]
-                    out.append((int(r), int(g), int(b)))
-                else:
-                    raise ValueError("Pixel missing color channels.")
-        return out
+    def opencv_color(self, screenshot: np.ndarray) -> np.ndarray:
+        arr = np.asarray(screenshot, dtype=np.uint8)
+        if arr.shape[-1] == 4:
+            rgb = cv2.cvtColor(arr, cv2.COLOR_BGRA2RGB)
+        else:
+            rgb = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+        return rgb.reshape(-1, 3)
