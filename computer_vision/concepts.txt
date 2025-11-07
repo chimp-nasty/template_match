@@ -78,6 +78,15 @@ For a new game to apply this bot these are the steps you need to build yourself:
         we can read the health via text using font template matching, we can estimate a health percentage from amount of red / black region in the healthbar
         now we can map the health of each enemy to their object / reference point
     
+    3. HSV filtering will be a large part of any template & shape matching as we can reduce false positives substantially. For hsv filtering we need the img to be in hsv
+        color format, but processing the img into hsv each frame will be expensive. (benchmarked 2ms average to find the "fill ratio" of an ROI by parsing a BGR img)
+        there are a couple things to consider here:
+        1. We can convert to hsv just the ROI's which reduced the expense of converting a whole screenshot to hsv
+        2. There is small overhead for every cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV) which is our conversion function (and this is as good as it gets, nothing faster i could find)
+        3. if there are a lot of ROI's (think of an ROI as its own UI element, so 1 for health, 1 for spells, 1 for mana etc) we can batch "close" ROI's
+        4. The ratio we are trying to balance is smallest total conversion area vs least amount of overhead (from func calls)
+        5. So we are trying to call cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV) as least as possible, on the smallest area possible.
+
     for abilities, spell cooldowns we can get a preset coordinate and check for a color difference to see if a spell is on cooldown.
     eg spell_a lives at [x,y] and the color of [x,y] is [1,2,3], if we use the spell the color of [x,y] becomes [4,5,6], so we know its on cooldown.
 
@@ -90,62 +99,104 @@ For a new game to apply this bot these are the steps you need to build yourself:
 
     with the dxcam setup this is a lot more possible because of the huge performance gains.
 
+3. this is where we create our games specific logic
 
-3. create data structures
-    you need to build out dataclasses for the information you want to store - this is how your mapping functions know where to put that data
-    you need to think about what is possible / what you want to identify - in terms of information ie player health, enemy positions, spell cooldowns
-    a dataclass looks like this:
-    class Enemy:
-        def __init__(self):
-            self.health = None
-            self.loc = None
-            self.is_casting = False
-    so when you map raw data to the reference object you can use readable classes to create easy to build scripts
+    3.0 create our main class
+        the class would be setup like this: # you need all of these functions/variables named like this 
+            class Logic:
+                # every game object should contain these flags as we are letting the processor know what we need (otherwise it does both)
+                def __init__(self, need_rgb: bool, need_hsv: bool): 
+                    self.data = None
+                    self.need_rgb = need_rgb
+                    self.need_hsv = need_hsv
+                    self.data_structures = {
+                        "player": [],
+                        ...
+                    }
+                    self.unique_data = None
 
-4. create mapping functions
-    for template matching you would take a frame (provided by Capture) and look for matches - the coordinates for matches are put into an array
-    this gets mapped to a datastructure object
-    eg 
+                # your initial setup function where we would find roi's make sure we can see target window etc, we can do calibration here as well
+                def start(self):
+                    if not self.data:
+                        return { "status": False, "message": "Calibration Failed" }
+                    else:
+                        return { "status": True, "message": "Calibration Success" }
 
-    enemy = Enemy()
-    enemy.health
-    enemy.position
+                # game specific img processing
+                def update_data(self, data):
+                    self.data = data
+                    
+                    self.unique_data = self.process_data()
 
-    a mapping simple mapping function:
+                def process_data(self):
+                    # some logic
 
-    enemy.health = data[12] / 255
-    so we know enemy health is at this index in an rgb pixel. we apply our decoding function ( / 255 ) to get a real float from the rgb color and map to
-    the logical reference point
+                def map_data(self, data):
+                    self.data_structures["player"].update()
 
-5. create script / logic execution
-    if the data is nicely mapped this is extremely easy.
-    its just a big if else chain that evaluates to a single output.
-    
-    def decision() -> str:
-        if enemy.health > 90:
-            return "Hammer Strike"
-        elseif player.health < 50:
-            return "Health Potion"
-        else:
-            return None
+                def execute(self):
+                    if self.data_structures["player"]["health"] > 100:
+                        pyautogui.press('key')
+                    # elif some condition:
+                        # some action
+                    else:
+                        return None
 
-    once we return what we want to do, we reference a hash table that correlates an input to a key
-    
-    spells = {
-        "Hammer Strike": "e",
-    }
+    3.1 create data structures
+        you need to build out dataclasses for the information you want to store - this is how your mapping functions know where to put that data
+        you need to think about what is possible / what you want to identify - in terms of information: ie player health, enemy positions, spell cooldowns
+        a dataclass looks like this:
+        class Enemy:
+            def __init__(self):
+                self.health = None
+                self.loc = None
+                self.is_casting = False
+        so when you map raw data to the reference object you can use readable classes to create easy to build scripts
 
-    def send_input(decision) -> None:
-        pyautogui.press(spells[decision])
+    3.2 create mapping functions
+        for template matching you would take a frame (provided by Capture) and look for matches - the coordinates for matches are put into an array
+        this gets mapped to a datastructure object
+        eg 
 
-    this is just an example of how to do it but you dont have to use pyautogui, I use postmessage to send inputs because you can send them directly to a target window
-    with a hwnd (windows handle)
+        enemy = Enemy()
+        enemy.health
+        enemy.position
 
-The whole flow of this is just to give insight on how to build something from scratch with the project framework, there are many ways to extract & isolate the data
-you want but the main bottleneck will be template matching performance. with simple color conversion you can easy push 500 cycles per second on low end hardware and really you would 
-only need about 30-100 to feel effective.
+        a mapping simple mapping function:
 
-template matching can be played around with a lot too eg template matching to grayscale img or using the hsv roi trick mentioned above, its about reducing the heavy lifting of
-the template matching as much as possible, which is most notably reducing the size of the needle (template) and the size of the haystack (reference img)
+        enemy.health = data[12] / 255
+        so we know enemy health is at this index in an rgb pixel. we apply our decoding function ( / 255 ) to get a real float from the rgb color and map to
+        the logical reference point
 
-you want to minimised the amount of templates you try to match to the whole screenshot as this will kill your bot.
+    3.3 create script / logic execution
+        if the data is nicely mapped this is extremely easy.
+        its just a big if else chain that evaluates to a single output.
+        
+        def decision() -> str:
+            if enemy.health > 90:
+                return "Hammer Strike"
+            elseif player.health < 50:
+                return "Health Potion"
+            else:
+                return None
+
+        once we return what we want to do, we reference a hash table that correlates an input to a key
+        
+        spells = {
+            "Hammer Strike": "e",
+        }
+
+        def send_input(decision) -> None:
+            pyautogui.press(spells[decision])
+
+        this is just an example of how to do it but you dont have to use pyautogui, I use postmessage to send inputs because you can send them directly to a target window
+        with a hwnd (windows handle)
+
+    The whole flow of this is just to give insight on how to build something from scratch with the project framework, there are many ways to extract & isolate the data
+    you want but the main bottleneck will be template matching performance. with simple color conversion you can easy push 500 cycles per second on low end hardware and really you would 
+    only need about 30-100 to feel effective.
+
+    template matching can be played around with a lot too eg template matching to grayscale img or using the hsv roi trick mentioned above, its about reducing the heavy lifting of
+    the template matching as much as possible, which is most notably reducing the size of the needle (template) and the size of the haystack (reference img)
+
+    you want to minimised the amount of templates you try to match to the whole screenshot as this will kill your bot.

@@ -29,9 +29,8 @@ class HSVFilter:
       self.bands = {'R': [(lo_u8, hi_u8), ...], 'G': [...], 'B': [...]}
     """
 
-    def __init__(self, filters: Dict[str, List[Tuple[int, int, int]]]):
-        self.filters = filters        # human HSV (deg 0..360, S/V 0..100)
-        self.bands: Dict[str, List[Tuple[np.ndarray, np.ndarray]]] = {"R": [], "G": [], "B": []}
+    def __init__(self):
+        self.bands: Dict[str, List[Tuple[np.ndarray, np.ndarray]]] = {}
         # reusable morphology kernels
         self.K_OPEN  = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         self.K_CLOSE = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
@@ -43,7 +42,7 @@ class HSVFilter:
         v = _clip_int(round(v * 2.55), 0, 255)
         return h, s, v
 
-    def create_filters(self) -> None:
+    def create_filters(self, name: str, hsv_range: list[tuple]) -> None:
         """Build NumPy lo/hi pairs once per color key ('R','G','B')."""
         def norm_band(lo_hsv, hi_hsv):
             loH, loS, loV = lo_hsv
@@ -65,11 +64,7 @@ class HSVFilter:
                 hi_cv = self.hsv_convert(*hi)
                 bands_cv.append((np.array(lo_cv, np.uint8), np.array(hi_cv, np.uint8)))
             return bands_cv
-
-        # Build R/G/B lists if present in self.filters
-        self.bands["R"] = norm_band(*self.filters["red"])    if "red"   in self.filters else []
-        self.bands["G"] = norm_band(*self.filters["green"])  if "green" in self.filters else []
-        self.bands["B"] = norm_band(*self.filters["blue"])   if "blue"  in self.filters else []
+        self.bands[name] = norm_band(*hsv_range)
 
     # --- Mask helpers ---
     def create_mask_from_hsv(self, hsv: np.ndarray, bands_np: List[Tuple[np.ndarray, np.ndarray]], *, do_morph=True):
@@ -254,25 +249,114 @@ class HSVFilter:
         if destroy:
             cv2.destroyWindow(title)
 
-    # --- Simple ROI fill helpers (area based) ---
-    def roi_mask(self, frame_bgr, roi, bands_np):
-        """Return binary mask for a color inside a given ROI (converts that ROI to HSV)."""
-        x, y, w, h = roi
-        if w <= 0 or h <= 0:
-            return None
-        crop = frame_bgr[y:y+h, x:x+w]
-        if crop.size == 0:
-            return None
-        return self.create_mask(crop, bands_np)
+    # ------ unified fill ratio for rect / poly / mask ------
+    def _resolve_bands(self, band) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """Accept 'R'|'G'|'B' or a pre-built list of (lo,hi) np.uint8 arrays."""
+        if isinstance(band, str):
+            key = band.upper()
+            if key not in self.bands:
+                raise ValueError(f"Unknown band key '{band}'. Use 'R'|'G'|'B' or pass bands list.")
+            return self.bands[key]
+        # assume already a list of (lo,hi) arrays
+        return band
 
-    def roi_fill_ratio(self, frame_bgr, roi, bands_np):
-        mask = self.roi_mask(frame_bgr, roi, bands_np)
-        if mask is None:
-            return 0.0
-        filled = cv2.countNonZero(mask)
-        total  = mask.shape[0] * mask.shape[1]
-        return (filled / total) if total else 0.0
-    
+    def _is_rect(self, roi) -> bool:
+        return isinstance(roi, (tuple, list)) and len(roi) == 4 and all(isinstance(v, int) for v in roi)
+
+    def _is_poly(self, roi) -> bool:
+        return isinstance(roi, np.ndarray) and roi.ndim == 3 and roi.shape[-2:] == (1, 2)
+
+    def _is_poly_list(self, roi) -> bool:
+        return isinstance(roi, (list, tuple)) and len(roi) > 0 and all(
+            isinstance(p, np.ndarray) and p.ndim == 3 and p.shape[-2:] == (1, 2) for p in roi
+        )
+
+    def _is_mask(self, roi) -> bool:
+        return isinstance(roi, np.ndarray) and roi.ndim == 2
+
+    def fill_ratio_any(self,
+                       frame,
+                       roi,
+                       band,
+                       *,
+                       is_hsv: bool = False,
+                       do_morph: bool = False,
+                       scratch_fullmask: np.ndarray | None = None,
+                       scratch_region_mask: np.ndarray | None = None) -> float:
+        """
+        Compute raw fill ratio (0..1) for rect or polygon or mask ROI.
+        - frame: BGR (default) or HSV (set is_hsv=True)
+        - roi:
+            * rect tuple (x,y,w,h), or
+            * polygon ndarray (N,1,2), or
+            * list of polygons [poly,...], or
+            * full-image binary mask (HxW uint8 0/255)
+        - band: 'R'|'G'|'B' or a list of (lo,hi) np.uint8 arrays
+        - scratch_fullmask: optional HxW uint8 buffer reused for color mask
+        - scratch_region_mask: optional HxW uint8 buffer reused for region mask (poly case)
+        """
+        bands_np = self._resolve_bands(band)
+
+        # Prepare HSV frame
+        if is_hsv:
+            frame_hsv = frame
+        else:
+            frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        H, W = frame_hsv.shape[:2]
+
+        # ---- Rect ROI path (fastest) ----
+        if self._is_rect(roi):
+            x, y, w, h = roi
+            if w <= 0 or h <= 0: 
+                return 0.0
+            hsv_roi = frame_hsv[y:y+h, x:x+w]
+            # Use the ROI view of the scratch mask if provided
+            if scratch_fullmask is not None and scratch_fullmask.shape[:2] == (H, W):
+                out_roi = scratch_fullmask[y:y+h, x:x+w]
+                self.color_mask_into(hsv_roi, bands_np, out_roi, do_morph=do_morph)
+                filled = cv2.countNonZero(out_roi)
+            else:
+                cm = self.create_mask_from_hsv(hsv_roi, bands_np, do_morph=do_morph)
+                filled = cv2.countNonZero(cm)
+            return filled / float(w * h)
+
+        # ---- Mask ROI path (arbitrary region already as full-image mask) ----
+        if self._is_mask(roi):
+            region_mask = roi
+            if region_mask.shape[:2] != (H, W):
+                raise ValueError("Region mask size must match frame size.")
+            # Build/Reuse color mask for the whole frame
+            if scratch_fullmask is not None and scratch_fullmask.shape[:2] == (H, W):
+                color_mask = self.color_mask_into(frame_hsv, bands_np, scratch_fullmask, do_morph=do_morph)
+            else:
+                color_mask = self.create_mask_from_hsv(frame_hsv, bands_np, do_morph=do_morph)
+            m, *_ = cv2.mean(color_mask, mask=region_mask)  # mean of 0/255 in region
+            return m / 255.0
+
+        # ---- Polygon ROI path (single or list): rasterize to a region mask on-the-fly ----
+        if self._is_poly(roi) or self._is_poly_list(roi):
+            # region mask (reuse if provided)
+            if scratch_region_mask is not None and scratch_region_mask.shape[:2] == (H, W):
+                region_mask = scratch_region_mask
+                region_mask.fill(0)
+            else:
+                region_mask = np.zeros((H, W), np.uint8)
+
+            polys = [roi] if self._is_poly(roi) else list(roi)
+            cv2.fillPoly(region_mask, polys, 255)
+
+            # Build/Reuse color mask
+            if scratch_fullmask is not None and scratch_fullmask.shape[:2] == (H, W):
+                color_mask = self.color_mask_into(frame_hsv, bands_np, scratch_fullmask, do_morph=do_morph)
+            else:
+                color_mask = self.create_mask_from_hsv(frame_hsv, bands_np, do_morph=do_morph)
+
+            m, *_ = cv2.mean(color_mask, mask=region_mask)
+            return m / 255.0
+
+        raise ValueError("Unsupported ROI type. Pass (x,y,w,h), polygon ndarray(s), or a binary region mask.")
+
 
 
 
@@ -292,6 +376,7 @@ if __name__ == "__main__":
 
     IMG_PATH = resource_path("epoch.jpeg")
     img = cv2.imread(str(IMG_PATH), cv2.IMREAD_COLOR)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
     FILTERS = {
         "red":   [(340, 24, 16), (20, 100, 100)],
@@ -299,24 +384,50 @@ if __name__ == "__main__":
         "blue":  [(160, 20, 27), (240, 100, 100)],
     }
 
-    ROI = "poly"  # 'rect' or 'poly'
+    ROI = "rect"  # 'rect' or 'poly'
 
-    hsv_filter = HSVFilter(FILTERS)
-    hsv_filter.create_filters()
+    hsv_filter = HSVFilter()
+
+    # add in our custom filters
+    hsv_filter.create_filters(name="Health", hsv_range=FILTERS["red"])
+    hsv_filter.create_filters(name="G", hsv_range=FILTERS["green"])
+    hsv_filter.create_filters(name="Mana", hsv_range=FILTERS["blue"])
 
     # Crop for detection (bottom-left 100% width, 15% height)
     cropped_img, (x0, y0, w, h) = hsv_filter.crop_region(img, {"anchor": "bl", "w": 1.0, "h": 0.15})
 
     # Convert HSV ONCE for the crop; then build masks from prebuilt bands
     crop_hsv = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2HSV)
-    mask_r = hsv_filter.create_mask_from_hsv(crop_hsv, hsv_filter.bands['R'])
-    mask_b = hsv_filter.create_mask_from_hsv(crop_hsv, hsv_filter.bands['B'])
+    mask_r = hsv_filter.create_mask_from_hsv(crop_hsv, hsv_filter.bands['Health'])
+    mask_b = hsv_filter.create_mask_from_hsv(crop_hsv, hsv_filter.bands['Mana'])
 
     if ROI == "rect":
         rois_r = hsv_filter.find_roi(mask_r, min_area=10000, max_area=18000)
         rois_b = hsv_filter.find_roi(mask_b, min_area=10000, max_area=18000)
         
         abs_rois = hsv_filter.offset_rois(rois_r + rois_b, (x0, y0))
+
+        vis = hsv_filter.draw_roi(img, abs_rois, color=(0, 200, 0), thickness=2, copy=True)
+
+        import time
+        roi  = abs_rois[0]
+        band = hsv_filter.bands['Health']
+        t0 = time.perf_counter()
+
+        # benchmarking the fill ratio (1000 cycles)
+        for _ in range(1000):
+            fill_ratio = hsv_filter.fill_ratio_any(
+                hsv,
+                roi,
+                band,
+                is_hsv=True,
+                do_morph=False
+            )
+        print(fill_ratio)
+        t1 = time.perf_counter()
+
+        avg_ms = (t1 - t0) * 1000 / 1000
+        print(f"Avg per call: {avg_ms:.5f} ms")
         
     else:  # ROI == "poly"
         polys_r = hsv_filter.find_roi_polygons(mask_r, min_area=10000, max_area=18000, epsilon_frac=0.001)
@@ -325,5 +436,44 @@ if __name__ == "__main__":
         abs_rois = hsv_filter.offset_polygons(polys_r + polys_b, (x0, y0))
         abs_polys_rt = hsv_filter.simplify_polys(abs_rois, epsilon_frac=0.01)
         
-    vis = hsv_filter.draw_polygons(img, abs_rois, color=(0, 200, 0), thickness=2, copy=True)
+        vis = hsv_filter.draw_polygons(img, abs_rois, color=(0, 200, 0), thickness=2, copy=True)
+
+        import time
+        roi  = abs_polys_rt[0]
+        band = hsv_filter.bands['Health']
+
+        # no hsv
+        # t0 = time.perf_counter()
+        # for _ in range(1000):
+        #     # Simulates: new BGR frame arrives, we call fill_ratio_any on it.
+        #     # (fill_ratio_any will do the BGR→HSV conversion internally each call)
+        #     fill_ratio = hsv_filter.fill_ratio_any(
+        #         img,         # pretend this is the fresh screenshot
+        #         roi,
+        #         band,
+        #         is_hsv=False,
+        #         do_morph=False
+        #     )
+        # t1 = time.perf_counter()
+
+        # avg_ms = (t1 - t0) * 1000.0 / 1000
+        # print(f"Avg per call (BGR→HSV each time): {avg_ms:.5f} ms")
+
+        # with hsv
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+        t0 = time.perf_counter()
+        for _ in range(1000):
+            fill_ratio = hsv_filter.fill_ratio_any(
+                hsv,            # use precomputed HSV
+                roi,
+                band,
+                is_hsv=True,    # tell it not to re-convert each time
+                do_morph=False  # keep fast path
+            )
+        t1 = time.perf_counter()
+
+        avg_ms = (t1 - t0) * 1000 / 1000
+        print(f"Avg per call: {avg_ms:.5f} ms")
+
     hsv_filter.display_img(vis, scale=0.5)

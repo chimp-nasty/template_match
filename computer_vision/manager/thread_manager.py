@@ -14,7 +14,7 @@ class ThreadManager:
         self,
         capture_func,
         process_func,
-        logic_func=None,
+        logic=None,
         is_paused=lambda: False,
         on_pause=None,
         on_resume=None,
@@ -40,7 +40,7 @@ class ThreadManager:
         """
         self.capture_func = capture_func
         self.process_func = process_func
-        self.logic_func   = logic_func or (lambda data: None)
+        self.logic        = logic
 
         self.is_paused = is_paused
         self.on_pause  = on_pause
@@ -51,7 +51,7 @@ class ThreadManager:
         self.threads   = []
         self._was_paused = False
 
-        self.data = None
+        self.data = {}
 
         # Logic pacer (precise cadence)
         self.target_fps = target_fps
@@ -218,7 +218,9 @@ class ThreadManager:
                 if frame is None:
                     break  # shutdown signal
                 t0 = time.perf_counter()
+
                 self.data = self.process_func(frame)
+
                 dt_ms = (time.perf_counter() - t0) * 1000.0
                 self.queue.task_done()
                 got_frame = True
@@ -227,10 +229,19 @@ class ThreadManager:
                 pass
 
             # Always run logic on the pacer cadence (even if no new frame)
-            t0 = time.perf_counter()
-            self.logic_func(self.data)   # your logic; keep it lightweight
-            dt_ms = (time.perf_counter() - t0) * 1000.0
-            self._dbg_logic_sample(dt_ms)
+            if self.data:
+                t0 = time.perf_counter()
+                
+                try:
+                    self.logic.update_data(self.data)
+                    self.logic.execute()
+                except Exception as e:
+                    # up to you: log or count; don’t crash the loop
+                    if self._dbg_enabled:
+                        print(f"[logic-error] {e}")
+
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                self._dbg_logic_sample(dt_ms)
 
             # per-interval debug print (once, here)
             self._dbg_maybe_report()
