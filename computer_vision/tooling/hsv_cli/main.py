@@ -54,7 +54,7 @@ if __name__ == "__main__":
                 is_hsv=True,
                 do_morph=False
             )
-        print(fill_ratio)
+        print(f"fill_ratio: {round(fill_ratio*100, 2)} %")
         t1 = time.perf_counter()
 
         avg_ms = (t1 - t0) * 1000 / 1000
