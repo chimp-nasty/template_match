@@ -3,7 +3,7 @@ import time
 import numpy as np
 
 class Display:
-    def __init__(self, window_name="Capture", scale=1.0, hotkey="q"):
+    def __init__(self, window_name="Capture", scale=1.0, hotkey="q", fps_overlay=True):
         self.window_name = window_name
         self.scale = float(scale)
         self.hk = (hotkey or "q").lower()
@@ -11,6 +11,8 @@ class Display:
         self._sized = False
         self._fps_ema = None
         self._last_ts = time.time()
+
+        self.fps_overlay = fps_overlay
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
 
@@ -78,7 +80,8 @@ class Display:
                 interpolation=cv2.INTER_AREA if self.scale < 1.0 else cv2.INTER_LINEAR
             )
 
-        frame = self._overlay_fps(frame)
+        if self.fps_overlay:
+            frame = self._overlay_fps(frame)
         cv2.imshow(self.window_name, frame)
 
         key = cv2.waitKey(1) & 0xFF
